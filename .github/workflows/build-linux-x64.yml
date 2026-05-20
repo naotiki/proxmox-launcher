@@ -46,8 +46,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pve-vm-launcher-linux-x64
-          path: |
-            dist/${{ env.BINARY_NAME }}
-            dist/${{ env.BINARY_NAME }}.sha256
+          path: dist/${{ env.BINARY_NAME }}
           if-no-files-found: error
           archive: false
