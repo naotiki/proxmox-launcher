@@ -47,7 +47,7 @@ jobs:
         with:
           name: pve-vm-launcher-linux-x64
           path: |
-            dist/${BINARY_NAME}
-            dist/${BINARY_NAME}.sha256
+            dist/${{ env.BINARY_NAME }}
+            dist/${{ env.BINARY_NAME }}.sha256
           if-no-files-found: error
           archive: false
