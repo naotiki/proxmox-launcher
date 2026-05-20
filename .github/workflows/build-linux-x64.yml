@@ -38,18 +38,16 @@ jobs:
       - name: Package artifact
         run: |
           set -euo pipefail
-          package="${BINARY_NAME}-${TARGET}"
-          mkdir -p "dist/${package}"
-          cp "target/${TARGET}/release/${BINARY_NAME}" "dist/${package}/"
-          cp README.md "dist/${package}/"
-          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
-          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+          mkdir -p "dist/"
+          cp "target/${TARGET}/release/${BINARY_NAME}" "dist/"
+          sha256sum "dist/${BINARY_NAME}" > "dist/${BINARY_NAME}.sha256"
 
       - name: Upload Linux x64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: pve-vm-launcher-linux-x64
           path: |
-            dist/pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz
-            dist/pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/${BINARY_NAME}
+            dist/${BINARY_NAME}.sha256
           if-no-files-found: error
+          archive: false
