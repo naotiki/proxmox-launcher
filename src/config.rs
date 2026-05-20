@@ -4,8 +4,11 @@ use std::{
     time::Duration,
 };
 
+use anyhow::{bail, Result};
+
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub keep_temp_files: bool,
     pub proxmox: ProxmoxConfig,
     pub viewer: ViewerConfig,
     pub vnc: VncConfig,
@@ -51,9 +54,18 @@ pub struct LoggingConfig {
     pub file: PathBuf,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CliOptions {
+    pub keep_temp_files: bool,
+    pub help: bool,
+}
+
 impl Config {
-    pub fn load() -> Self {
-        Self::default()
+    pub fn load(options: CliOptions) -> Self {
+        Self {
+            keep_temp_files: options.keep_temp_files,
+            ..Self::default()
+        }
     }
 
     pub fn temp_dir(&self) -> &Path {
@@ -61,11 +73,42 @@ impl Config {
     }
 }
 
+impl CliOptions {
+    pub fn parse<I, S>(args: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut options = Self::default();
+
+        for arg in args {
+            match arg.into().as_str() {
+                "--keep-temp-files" => options.keep_temp_files = true,
+                "-h" | "--help" => options.help = true,
+                other => bail!("unknown option `{other}`\n\n{}", usage()),
+            }
+        }
+
+        Ok(options)
+    }
+}
+
+pub fn usage() -> &'static str {
+    "\
+Usage: pve-vm-launcher [OPTIONS]
+
+Options:
+      --keep-temp-files  Keep generated .vv/.remmina files and skip startup temp cleanup
+  -h, --help             Show this help
+"
+}
+
 impl Default for Config {
     fn default() -> Self {
         let temp_dir = env::temp_dir().join("pve-vm-launcher");
 
         Self {
+            keep_temp_files: false,
             proxmox: ProxmoxConfig {
                 node: "auto".to_string(),
                 command_timeout: Duration::from_secs(15),
@@ -104,5 +147,37 @@ fn default_log_file() -> PathBuf {
             .join("app.log")
     } else {
         env::temp_dir().join("pve-vm-launcher").join("app.log")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_keep_temp_files_option() {
+        let options = CliOptions::parse(["--keep-temp-files"]).unwrap();
+
+        assert_eq!(
+            options,
+            CliOptions {
+                keep_temp_files: true,
+                help: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_help_option() {
+        let options = CliOptions::parse(["--help"]).unwrap();
+
+        assert!(options.help);
+    }
+
+    #[test]
+    fn rejects_unknown_option() {
+        let error = CliOptions::parse(["--wat"]).unwrap_err().to_string();
+
+        assert!(error.contains("unknown option `--wat`"));
     }
 }

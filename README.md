@@ -23,6 +23,15 @@ cargo build --release
 sudo ./target/release/pve-vm-launcher
 ```
 
+To inspect generated SPICE `.vv` or Remmina profile files, keep temporary files:
+
+```bash
+sudo ./target/release/pve-vm-launcher --keep-temp-files
+ls -l /tmp/pve-vm-launcher/
+```
+
+Running again without `--keep-temp-files` cleans old generated files on startup.
+
 ## CI Artifact
 
 GitHub Actions builds a Linux x64 release artifact on push, pull request, and manual workflow runs.

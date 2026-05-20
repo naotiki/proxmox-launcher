@@ -5,11 +5,11 @@ mod proxmox;
 mod ui;
 mod viewer;
 
-use std::{io, panic, time::Duration};
+use std::{env, io, panic, time::Duration};
 
 use anyhow::Result;
 use app::App;
-use config::Config;
+use config::{usage, CliOptions, Config};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
@@ -18,8 +18,16 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 fn main() -> Result<()> {
-    let config = Config::load();
-    viewer::cleanup_temp_dir(&config)?;
+    let options = CliOptions::parse(env::args().skip(1))?;
+    if options.help {
+        print!("{}", usage());
+        return Ok(());
+    }
+
+    let config = Config::load(options);
+    if !config.keep_temp_files {
+        viewer::cleanup_temp_dir(&config)?;
+    }
 
     let mut terminal = setup_terminal()?;
     install_panic_restore_hook();

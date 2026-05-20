@@ -106,7 +106,9 @@ pub fn attach_spice(
         &[OsString::from(vv_path.as_os_str())],
     )?;
 
-    delete_later(vv_path.clone(), config.spice.delete_vv_after);
+    if !config.keep_temp_files {
+        delete_later(vv_path.clone(), config.spice.delete_vv_after);
+    }
 
     Ok(ViewerSession {
         vmid: vm.vmid,
@@ -165,7 +167,9 @@ pub fn attach_vnc(
         ],
     )?;
 
-    delete_later(profile_path.clone(), config.vnc.delete_profile_after);
+    if !config.keep_temp_files {
+        delete_later(profile_path.clone(), config.vnc.delete_profile_after);
+    }
 
     Ok(ViewerSession {
         vmid: vm.vmid,
