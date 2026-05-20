@@ -1,0 +1,55 @@
+name: Build Linux x64
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: pve-vm-launcher
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    name: Build x86_64 Linux binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${TARGET}"
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          package="${BINARY_NAME}-${TARGET}"
+          mkdir -p "dist/${package}"
+          cp "target/${TARGET}/release/${BINARY_NAME}" "dist/${package}/"
+          cp README.md "dist/${package}/"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+      - name: Upload Linux x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pve-vm-launcher-linux-x64
+          path: |
+            dist/pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz
+            dist/pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if-no-files-found: error

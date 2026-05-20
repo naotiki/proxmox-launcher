@@ -23,6 +23,15 @@ cargo build --release
 sudo ./target/release/pve-vm-launcher
 ```
 
+## CI Artifact
+
+GitHub Actions builds a Linux x64 release artifact on push, pull request, and manual workflow runs.
+
+Download `pve-vm-launcher-linux-x64` from the workflow run artifacts. It contains:
+
+- `pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz`
+- `pve-vm-launcher-x86_64-unknown-linux-gnu.tar.gz.sha256`
+
 ## Key Bindings
 
 | Key | Action |
