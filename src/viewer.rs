@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{
     command::{ensure_command, CommandRunner},
@@ -78,20 +78,21 @@ pub fn attach_spice(
     let path = format!("/nodes/{node}/qemu/{}/spiceproxy", vm.vmid);
     let result = runner.run(
         "pvesh",
-        &["create", path.as_str(), "--output-format", "text"],
+        &["create", path.as_str(), "--output-format", "json"],
         Duration::from_secs(10),
     )?;
 
     if result.stdout.trim().is_empty() {
-        bail!("SPICE proxy returned an empty .vv file");
+        bail!("SPICE proxy returned empty output");
     }
+    let vv_contents = spice_vv_from_pvesh_json(&result.stdout)?;
 
     ensure_private_dir(&config.spice.vv_dir)?;
     let vv_path = config
         .spice
         .vv_dir
         .join(format!("spice-{}-{}.vv", vm.vmid, timestamp_millis()));
-    write_private_file(&vv_path, result.stdout.as_bytes())
+    write_private_file(&vv_path, vv_contents.as_bytes())
         .with_context(|| format!("failed to write {}", vv_path.display()))?;
 
     let process_id = runner.spawn_detached(
@@ -177,6 +178,93 @@ pub fn attach_vnc(
     })
 }
 
+fn spice_vv_from_pvesh_json(stdout: &str) -> Result<String> {
+    let value = parse_json_object(stdout)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("spiceproxy JSON output was not an object"))?;
+
+    for required in ["type", "host", "proxy", "password"] {
+        if string_field(object, required).is_none() {
+            bail!("spiceproxy JSON output did not include `{required}`");
+        }
+    }
+
+    let preferred_order = [
+        "type",
+        "host",
+        "port",
+        "tls-port",
+        "password",
+        "proxy",
+        "ca",
+        "host-subject",
+        "toggle-fullscreen",
+        "release-cursor",
+        "secure-attention",
+        "title",
+        "delete-this-file",
+    ];
+
+    let mut output = String::from("[virt-viewer]\n");
+    for key in preferred_order {
+        if let Some(value) = vv_value(object, key) {
+            output.push_str(key);
+            output.push('=');
+            output.push_str(&value);
+            output.push('\n');
+        }
+    }
+
+    let mut extra_keys: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !preferred_order.contains(key))
+        .collect();
+    extra_keys.sort_unstable();
+
+    for key in extra_keys {
+        if let Some(value) = vv_value(object, key) {
+            output.push_str(key);
+            output.push('=');
+            output.push_str(&value);
+            output.push('\n');
+        }
+    }
+
+    Ok(output)
+}
+
+fn parse_json_object(stdout: &str) -> Result<Value> {
+    let trimmed = stdout.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("spiceproxy output was not JSON"))?;
+    serde_json::from_str(&trimmed[start..])
+        .with_context(|| "failed to parse spiceproxy JSON output")
+}
+
+fn vv_value(object: &Map<String, Value>, key: &str) -> Option<String> {
+    match object.get(key)? {
+        Value::String(value) => Some(escape_vv_value(value)),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    object.get(key).and_then(Value::as_str)
+}
+
+fn escape_vv_value(value: &str) -> String {
+    value.replace('\r', "").replace('\n', "\\n")
+}
+
 fn remmina_profile(vm: &Vm, port: u64, ticket: &str) -> String {
     format!(
         "\
@@ -240,4 +328,38 @@ fn timestamp_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_spice_proxy_json_as_virt_viewer_file() {
+        let json = r#"{
+            "ca": "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+            "delete-this-file": 1,
+            "host": "pvespiceproxy:ticket:127:basic:61000::token",
+            "host-subject": "OU=PVE Cluster Node,O=Proxmox Virtual Environment,CN=basic.home.lan",
+            "password": "secret",
+            "proxy": "http://basic.home.lan:3128",
+            "release-cursor": "Ctrl+Alt+R",
+            "secure-attention": "Ctrl+Alt+Ins",
+            "title": "VM 127 - onicha",
+            "tls-port": 61000,
+            "toggle-fullscreen": "Shift+F11",
+            "type": "spice"
+        }"#;
+
+        let vv = spice_vv_from_pvesh_json(json).unwrap();
+
+        assert!(vv.starts_with("[virt-viewer]\ntype=spice\n"));
+        assert!(vv.contains("host=pvespiceproxy:ticket:127:basic:61000::token\n"));
+        assert!(vv.contains("tls-port=61000\n"));
+        assert!(vv.contains("password=secret\n"));
+        assert!(vv.contains("proxy=http://basic.home.lan:3128\n"));
+        assert!(
+            vv.contains("ca=-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n\n")
+        );
+    }
 }

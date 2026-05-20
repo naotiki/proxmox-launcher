@@ -543,18 +543,26 @@ pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy
 remote-viewerで開く
 ```
 
-### 10.2 SPICE proxyファイル取得
+### 10.2 SPICE proxy情報取得
 
-以下を実行する。
+`pvesh`の`text`出力は表形式であり、そのまま`.vv`ファイルとしては使えない。
+そのため、初期実装ではJSONとして取得し、アプリ側で`[virt-viewer]`形式の`.vv`ファイルへ変換する。
 
 ```bash
-pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy > /tmp/pve-vm-launcher/spice-{vmid}.vv
+pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy --output-format json
 ```
 
-または、出力形式が必要な場合:
+生成する`.vv`ファイル例:
 
-```bash
-pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy --output-format text > /tmp/pve-vm-launcher/spice-{vmid}.vv
+```ini
+[virt-viewer]
+type=spice
+host=pvespiceproxy:...
+tls-port=61000
+password=...
+proxy=http://basic.home.lan:3128
+ca=-----BEGIN CERTIFICATE-----\n...
+host-subject=OU=PVE Cluster Node,O=Proxmox Virtual Environment,CN=basic.home.lan
 ```
 
 ### 10.3 virt-viewer起動
@@ -1055,7 +1063,9 @@ Attach via SPICE
   ↓
 VM running確認
   ↓
-pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy > file.vv
+pvesh create /nodes/{node}/qemu/{vmid}/spiceproxy --output-format json
+  ↓
+JSONを[virt-viewer]形式の.vvへ変換
   ↓
 remote-viewer file.vv 起動
   ↓
