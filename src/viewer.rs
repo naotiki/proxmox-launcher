@@ -24,6 +24,12 @@ pub struct ViewerSession {
     pub temp_files: Vec<PathBuf>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VncProxyInfo {
+    server: String,
+    ticket: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Protocol {
     Auto,
@@ -135,18 +141,9 @@ pub fn attach_vnc(
         Duration::from_secs(10),
     )?;
 
-    let value: Value = serde_json::from_str(&result.stdout)
-        .with_context(|| "failed to parse vncproxy JSON output")?;
-    let port = value
-        .get("port")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("vncproxy output did not include `port`"))?;
-    let ticket = value
-        .get("ticket")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("vncproxy output did not include `ticket`"))?;
+    let proxy = vnc_proxy_from_pvesh_json(&result.stdout)?;
 
-    if ticket.contains('\n') || ticket.contains('\r') {
+    if proxy.ticket.contains('\n') || proxy.ticket.contains('\r') {
         bail!("vncproxy ticket contains an unsupported newline");
     }
 
@@ -156,7 +153,7 @@ pub fn attach_vnc(
         vm.vmid,
         timestamp_millis()
     ));
-    let profile = remmina_profile(vm, port, ticket);
+    let profile = remmina_profile(vm, &proxy);
     write_private_file(&profile_path, profile.as_bytes())
         .with_context(|| format!("failed to write {}", profile_path.display()))?;
 
@@ -178,11 +175,31 @@ pub fn attach_vnc(
     })
 }
 
+fn vnc_proxy_from_pvesh_json(stdout: &str) -> Result<VncProxyInfo> {
+    let value = parse_json_object(stdout, "vncproxy")?;
+    let object = pvesh_object(&value, "vncproxy")?;
+    let keys = available_keys(object);
+
+    let port = json_scalar(object, "port")
+        .ok_or_else(|| anyhow::anyhow!("vncproxy output did not include `port`; keys: {keys}"))?;
+    let ticket = json_scalar(object, "ticket")
+        .or_else(|| json_scalar(object, "password"))
+        .ok_or_else(|| anyhow::anyhow!("vncproxy output did not include `ticket`; keys: {keys}"))?;
+
+    let server = if port.chars().all(|value| value.is_ascii_digit()) {
+        format!("127.0.0.1:{port}")
+    } else if port.contains(':') {
+        port
+    } else {
+        bail!("vncproxy `port` was not a port number or host:port value: {port}");
+    };
+
+    Ok(VncProxyInfo { server, ticket })
+}
+
 fn spice_vv_from_pvesh_json(stdout: &str) -> Result<String> {
-    let value = parse_json_object(stdout)?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("spiceproxy JSON output was not an object"))?;
+    let value = parse_json_object(stdout, "spiceproxy")?;
+    let object = pvesh_object(&value, "spiceproxy")?;
 
     for required in ["type", "host", "proxy", "password"] {
         if string_field(object, required).is_none() {
@@ -235,7 +252,7 @@ fn spice_vv_from_pvesh_json(stdout: &str) -> Result<String> {
     Ok(output)
 }
 
-fn parse_json_object(stdout: &str) -> Result<Value> {
+fn parse_json_object(stdout: &str, command_name: &str) -> Result<Value> {
     let trimmed = stdout.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         return Ok(value);
@@ -243,9 +260,21 @@ fn parse_json_object(stdout: &str) -> Result<Value> {
 
     let start = trimmed
         .find('{')
-        .ok_or_else(|| anyhow::anyhow!("spiceproxy output was not JSON"))?;
+        .ok_or_else(|| anyhow::anyhow!("{command_name} output was not JSON"))?;
     serde_json::from_str(&trimmed[start..])
-        .with_context(|| "failed to parse spiceproxy JSON output")
+        .with_context(|| format!("failed to parse {command_name} JSON output"))
+}
+
+fn pvesh_object<'a>(value: &'a Value, command_name: &str) -> Result<&'a Map<String, Value>> {
+    if let Some(data) = value.get("data") {
+        return data
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("{command_name} JSON `data` field was not an object"));
+    }
+
+    value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{command_name} JSON output was not an object"))
 }
 
 fn vv_value(object: &Map<String, Value>, key: &str) -> Option<String> {
@@ -257,28 +286,43 @@ fn vv_value(object: &Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
+fn json_scalar(object: &Map<String, Value>, key: &str) -> Option<String> {
+    match object.get(key)? {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     object.get(key).and_then(Value::as_str)
+}
+
+fn available_keys(object: &Map<String, Value>) -> String {
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.join(", ")
 }
 
 fn escape_vv_value(value: &str) -> String {
     value.replace('\r', "").replace('\n', "\\n")
 }
 
-fn remmina_profile(vm: &Vm, port: u64, ticket: &str) -> String {
+fn remmina_profile(vm: &Vm, proxy: &VncProxyInfo) -> String {
     format!(
         "\
 [remmina]
 name=Proxmox VM {} {}
 protocol=VNC
-server=127.0.0.1:{}
+server={}
 password={}
 disableclipboard=0
 viewmode=1
 quality=9
 colordepth=32
 ",
-        vm.vmid, vm.name, port, ticket
+        vm.vmid, vm.name, proxy.server, proxy.ticket
     )
 }
 
@@ -361,5 +405,41 @@ mod tests {
         assert!(
             vv.contains("ca=-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\\n\n")
         );
+    }
+
+    #[test]
+    fn parses_vnc_proxy_with_string_port() {
+        let json = r#"{
+            "cert": "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+            "port": "5901",
+            "ticket": "PVEVNC:ticket",
+            "upid": "UPID:basic:123",
+            "user": "root@pam"
+        }"#;
+
+        let proxy = vnc_proxy_from_pvesh_json(json).unwrap();
+
+        assert_eq!(
+            proxy,
+            VncProxyInfo {
+                server: "127.0.0.1:5901".to_string(),
+                ticket: "PVEVNC:ticket".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_vnc_proxy_with_numeric_port_and_data_wrapper() {
+        let json = r#"{
+            "data": {
+                "port": 5902,
+                "ticket": "PVEVNC:wrapped"
+            }
+        }"#;
+
+        let proxy = vnc_proxy_from_pvesh_json(json).unwrap();
+
+        assert_eq!(proxy.server, "127.0.0.1:5902");
+        assert_eq!(proxy.ticket, "PVEVNC:wrapped");
     }
 }
