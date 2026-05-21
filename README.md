@@ -31,6 +31,7 @@ ls -l /tmp/pve-vm-launcher/
 ```
 
 Running again without `--keep-temp-files` cleans old generated files on startup.
+When started through `sudo`, generated viewer files are owned by `SUDO_UID:SUDO_GID` so the desktop user can read them.
 
 ## Configuration
 

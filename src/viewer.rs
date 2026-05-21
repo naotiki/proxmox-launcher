@@ -1,4 +1,5 @@
 use std::{
+    env,
     ffi::OsString,
     fs::{self, DirBuilder, OpenOptions},
     io::Write,
@@ -367,6 +368,7 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
         fs::create_dir_all(path)?;
     }
 
+    chown_for_invoking_user(path);
     Ok(())
 }
 
@@ -383,7 +385,31 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = options.open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
+    chown_for_invoking_user(path);
     Ok(())
+}
+
+fn chown_for_invoking_user(path: &Path) {
+    let uid = env::var("SUDO_UID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let gid = env::var("SUDO_GID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+
+    if uid.is_none() && gid.is_none() {
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        let _ = std::os::unix::fs::chown(path, uid, gid);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn delete_later(path: PathBuf, delay: Duration) {
