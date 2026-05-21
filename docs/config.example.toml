@@ -1,0 +1,18 @@
+# Copy to ~/.config/pve-vm-launcher/config.toml and edit as needed.
+
+[viewer.spice]
+command = "remote-viewer"
+args = []
+run_as_invoking_user = true
+
+[viewer.spice.env]
+# GDK_BACKEND = "x11"
+# WAYLAND_DISPLAY = ""
+
+[viewer.vnc]
+command = "remmina"
+args = []
+run_as_invoking_user = true
+
+[viewer.vnc.env]
+# GDK_BACKEND = "x11"

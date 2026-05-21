@@ -693,6 +693,8 @@ VM 101 ubuntu-lab は停止中です。
 ```
 
 初期実装ではユーザー単位設定を優先する。
+初回起動時に設定ファイルが存在しない場合は、デフォルト内容で`~/.config/pve-vm-launcher/config.toml`を作成する。
+`sudo`経由で起動された場合は`/root`ではなく`SUDO_USER`のホームディレクトリを優先する。
 
 ### 12.2 設定例
 
@@ -704,8 +706,22 @@ prefer_pvesh = true
 
 [viewer]
 default_protocol = "auto"
-vnc_viewer = "remmina"
-spice_viewer = "remote-viewer"
+
+[viewer.spice]
+command = "remote-viewer"
+args = []
+run_as_invoking_user = true
+
+[viewer.spice.env]
+# GDK_BACKEND = "x11"
+
+[viewer.vnc]
+command = "remmina"
+args = []
+run_as_invoking_user = true
+
+[viewer.vnc.env]
+# GDK_BACKEND = "x11"
 
 [vnc]
 enabled = true
@@ -734,8 +750,14 @@ file = "~/.local/state/pve-vm-launcher/app.log"
 |---|---|
 | `node` | `auto` |
 | `default_protocol` | `auto` |
-| `vnc_viewer` | `remmina` |
-| `spice_viewer` | `remote-viewer` |
+| `viewer.vnc.command` | `remmina` |
+| `viewer.vnc.args` | `[]` |
+| `viewer.vnc.env` | empty |
+| `viewer.vnc.run_as_invoking_user` | `true` |
+| `viewer.spice.command` | `remote-viewer` |
+| `viewer.spice.args` | `[]` |
+| `viewer.spice.env` | empty |
+| `viewer.spice.run_as_invoking_user` | `true` |
 | `command_timeout_sec` | `15` |
 | `confirm_destructive_actions` | `true` |
 | `delete_vv_after_sec` | `30` |

@@ -24,7 +24,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = Config::load(options);
+    let config = Config::load(options)?;
     if !config.keep_temp_files {
         viewer::cleanup_temp_dir(&config)?;
     }

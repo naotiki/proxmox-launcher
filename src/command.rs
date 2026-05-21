@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     ffi::OsString,
     fs::{self, OpenOptions},
@@ -23,6 +24,22 @@ pub struct CommandResult {
     pub stdout: String,
     pub stderr: String,
     pub duration: Duration,
+}
+
+#[derive(Clone, Debug)]
+struct DetachedLaunch {
+    program: String,
+    args: Vec<OsString>,
+    env_vars: Vec<(String, String)>,
+    run_as_user: Option<String>,
+    setsid: bool,
+}
+
+#[derive(Clone, Debug)]
+struct InvokingUser {
+    name: String,
+    uid: Option<u32>,
+    home: Option<PathBuf>,
 }
 
 impl CommandRunner {
@@ -90,20 +107,19 @@ impl CommandRunner {
         }
     }
 
-    pub fn spawn_detached(&self, program: &str, args: &[OsString]) -> Result<u32> {
-        ensure_command(program)?;
-
-        let use_setsid = command_exists("setsid");
-        let mut command = if use_setsid {
-            let mut command = Command::new("setsid");
-            command.arg(program);
-            command.args(args);
-            command
-        } else {
-            let mut command = Command::new(program);
-            command.args(args);
-            command
-        };
+    pub fn spawn_detached(
+        &self,
+        program: &str,
+        args: &[OsString],
+        env_vars: &[(String, String)],
+        run_as_invoking_user: bool,
+    ) -> Result<u32> {
+        let launch = build_detached_launch(program, args, env_vars, run_as_invoking_user)?;
+        let mut command = Command::new(&launch.program);
+        command.args(&launch.args);
+        if launch.run_as_user.is_none() {
+            command.envs(launch.env_vars.iter().map(|(key, value)| (key, value)));
+        }
 
         let child = command
             .stdin(Stdio::null())
@@ -112,7 +128,7 @@ impl CommandRunner {
             .spawn()
             .with_context(|| format!("failed to spawn viewer `{program}`"))?;
 
-        self.log_detached(program, args, child.id(), use_setsid);
+        self.log_detached(&launch, child.id());
         Ok(child.id())
     }
 
@@ -131,18 +147,239 @@ impl CommandRunner {
         append_log_line(&self.log_path, &line);
     }
 
-    fn log_detached(&self, program: &str, args: &[OsString], pid: u32, setsid: bool) {
-        let mut command = vec![program.to_string()];
-        command.extend(args.iter().map(|arg| arg.to_string_lossy().to_string()));
+    fn log_detached(&self, launch: &DetachedLaunch, pid: u32) {
+        let mut command = vec![launch.program.clone()];
+        command.extend(
+            launch
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().to_string()),
+        );
+        let env_keys = launch
+            .env_vars
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let run_as_user = launch.run_as_user.as_deref().unwrap_or("");
         let line = format!(
-            "{} status=spawned pid={} setsid={} cmd=\"{}\"\n",
+            "{} status=spawned pid={} setsid={} run_as_user=\"{}\" env_keys=\"{}\" cmd=\"{}\"\n",
             unix_timestamp(),
             pid,
-            setsid,
+            launch.setsid,
+            sanitize_log_value(run_as_user),
+            sanitize_log_value(&env_keys),
             display_command(&command),
         );
         append_log_line(&self.log_path, &line);
     }
+}
+
+fn build_detached_launch(
+    program: &str,
+    args: &[OsString],
+    env_vars: &[(String, String)],
+    run_as_invoking_user: bool,
+) -> Result<DetachedLaunch> {
+    let invoking_user = run_as_invoking_user.then(invoking_user).flatten();
+    let effective_env = viewer_env(invoking_user.as_ref(), env_vars);
+    let setsid = command_exists("setsid");
+
+    if let Some(user) = invoking_user {
+        return build_user_launch(program, args, &effective_env, &user, setsid);
+    }
+
+    ensure_command(program)?;
+    let mut launch_args = Vec::new();
+    let launch_program = if setsid {
+        launch_args.push(OsString::from(program));
+        "setsid".to_string()
+    } else {
+        program.to_string()
+    };
+    launch_args.extend(args.iter().cloned());
+
+    Ok(DetachedLaunch {
+        program: launch_program,
+        args: launch_args,
+        env_vars: effective_env,
+        run_as_user: None,
+        setsid,
+    })
+}
+
+fn build_user_launch(
+    program: &str,
+    args: &[OsString],
+    env_vars: &[(String, String)],
+    user: &InvokingUser,
+    setsid: bool,
+) -> Result<DetachedLaunch> {
+    let switcher = user_switcher()?;
+    let env_program = if Path::new("/usr/bin/env").is_file() {
+        "/usr/bin/env"
+    } else {
+        "env"
+    };
+
+    let mut launch_args = Vec::new();
+    match switcher {
+        UserSwitcher::Runuser => {
+            launch_args.extend([
+                OsString::from("-u"),
+                OsString::from(&user.name),
+                OsString::from("--"),
+                OsString::from(env_program),
+            ]);
+        }
+        UserSwitcher::Sudo => {
+            launch_args.extend([
+                OsString::from("-u"),
+                OsString::from(&user.name),
+                OsString::from(env_program),
+            ]);
+        }
+    }
+
+    launch_args.extend(
+        env_vars
+            .iter()
+            .map(|(key, value)| OsString::from(format!("{key}={value}"))),
+    );
+    if setsid {
+        launch_args.push(OsString::from("setsid"));
+    }
+    launch_args.push(OsString::from(program));
+    launch_args.extend(args.iter().cloned());
+
+    Ok(DetachedLaunch {
+        program: switcher.program().to_string(),
+        args: launch_args,
+        env_vars: env_vars.to_vec(),
+        run_as_user: Some(user.name.clone()),
+        setsid,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserSwitcher {
+    Runuser,
+    Sudo,
+}
+
+impl UserSwitcher {
+    fn program(self) -> &'static str {
+        match self {
+            Self::Runuser => "runuser",
+            Self::Sudo => "sudo",
+        }
+    }
+}
+
+fn user_switcher() -> Result<UserSwitcher> {
+    if command_exists("runuser") {
+        Ok(UserSwitcher::Runuser)
+    } else if command_exists("sudo") {
+        Ok(UserSwitcher::Sudo)
+    } else {
+        bail!("viewer must run as the invoking desktop user, but neither `runuser` nor `sudo` was found")
+    }
+}
+
+fn invoking_user() -> Option<InvokingUser> {
+    let name = env::var("SUDO_USER").ok()?;
+    if name.is_empty() || name == "root" {
+        return None;
+    }
+
+    let uid = env::var("SUDO_UID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let home = passwd_home(&name);
+
+    Some(InvokingUser { name, uid, home })
+}
+
+fn viewer_env(
+    user: Option<&InvokingUser>,
+    configured: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut values = BTreeMap::new();
+
+    for key in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "XDG_SESSION_TYPE",
+        "DESKTOP_SESSION",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+    ] {
+        if let Some(value) = env::var_os(key) {
+            values.insert(key.to_string(), value.to_string_lossy().to_string());
+        }
+    }
+
+    if !values.contains_key("XDG_RUNTIME_DIR") {
+        if let Some(uid) = user.and_then(|user| user.uid) {
+            values.insert("XDG_RUNTIME_DIR".to_string(), format!("/run/user/{uid}"));
+        } else if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
+            values.insert(
+                "XDG_RUNTIME_DIR".to_string(),
+                value.to_string_lossy().to_string(),
+            );
+        }
+    }
+
+    if !values.contains_key("DBUS_SESSION_BUS_ADDRESS") {
+        if let Some(uid) = user.and_then(|user| user.uid) {
+            let bus = PathBuf::from(format!("/run/user/{uid}/bus"));
+            if bus.exists() {
+                values.insert(
+                    "DBUS_SESSION_BUS_ADDRESS".to_string(),
+                    format!("unix:path={}", bus.display()),
+                );
+            }
+        }
+    }
+
+    if !values.contains_key("XAUTHORITY") {
+        if let Some(home) = user.and_then(|user| user.home.as_ref()) {
+            let xauthority = home.join(".Xauthority");
+            if xauthority.exists() {
+                values.insert("XAUTHORITY".to_string(), xauthority.display().to_string());
+            }
+        }
+    }
+
+    for (key, value) in configured {
+        values.insert(key.clone(), value.clone());
+    }
+
+    values.into_iter().collect()
+}
+
+fn passwd_home(user_name: &str) -> Option<PathBuf> {
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        if name != user_name {
+            return None;
+        }
+
+        let _password = fields.next()?;
+        let _uid = fields.next()?;
+        let _gid = fields.next()?;
+        let _gecos = fields.next()?;
+        let home = fields.next()?;
+        (!home.is_empty()).then(|| PathBuf::from(home))
+    })
 }
 
 pub fn ensure_command(program: &str) -> Result<()> {

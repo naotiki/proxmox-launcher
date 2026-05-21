@@ -32,6 +32,40 @@ ls -l /tmp/pve-vm-launcher/
 
 Running again without `--keep-temp-files` cleans old generated files on startup.
 
+## Configuration
+
+Optional config file:
+
+```text
+~/.config/pve-vm-launcher/config.toml
+```
+
+The launcher creates this file with default values on first startup. When started with `sudo`, it prefers the invoking user's home directory from `SUDO_USER`, not `/root`.
+
+Viewer command, extra arguments, and environment variables can be configured separately for SPICE and VNC:
+
+```toml
+[viewer.spice]
+command = "remote-viewer"
+args = ["--full-screen"]
+run_as_invoking_user = true
+
+[viewer.spice.env]
+GDK_BACKEND = "x11"
+
+[viewer.vnc]
+command = "remmina"
+args = []
+run_as_invoking_user = true
+
+[viewer.vnc.env]
+GDK_BACKEND = "x11"
+```
+
+Generated file arguments are appended automatically. SPICE runs as `command <args> <file.vv>`, and VNC runs as `command <args> -c <profile.remmina>`.
+
+When the launcher is started with `sudo`, viewers run as `SUDO_USER` by default. This keeps RDP/X11 session access with variables such as `DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`, and `XDG_RUNTIME_DIR` while keeping Proxmox CLI operations privileged. Set `run_as_invoking_user = false` for a viewer only if it must run as root.
+
 ## CI Artifact
 
 GitHub Actions builds a Linux x64 release artifact on push, pull request, and manual workflow runs.

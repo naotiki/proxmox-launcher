@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     command::{ensure_command, CommandRunner},
-    config::Config,
+    config::{Config, ViewerLaunchConfig},
     proxmox::Vm,
 };
 
@@ -79,7 +79,7 @@ pub fn attach_spice(
     if !config.spice.enabled {
         bail!("SPICE support is disabled");
     }
-    ensure_command(&config.viewer.spice_viewer)?;
+    ensure_command(&config.viewer.spice.command)?;
 
     let path = format!("/nodes/{node}/qemu/{}/spiceproxy", vm.vmid);
     let result = runner.run(
@@ -102,8 +102,10 @@ pub fn attach_spice(
         .with_context(|| format!("failed to write {}", vv_path.display()))?;
 
     let process_id = runner.spawn_detached(
-        &config.viewer.spice_viewer,
-        &[OsString::from(vv_path.as_os_str())],
+        &config.viewer.spice.command,
+        &viewer_args_with_path(&config.viewer.spice, vv_path.as_os_str()),
+        &config.viewer.spice.env,
+        config.viewer.spice.run_as_invoking_user,
     )?;
 
     if !config.keep_temp_files {
@@ -127,7 +129,7 @@ pub fn attach_vnc(
     if !config.vnc.enabled {
         bail!("VNC support is disabled");
     }
-    ensure_command(&config.viewer.vnc_viewer)?;
+    ensure_command(&config.viewer.vnc.command)?;
 
     let path = format!("/nodes/{node}/qemu/{}/vncproxy", vm.vmid);
     let result = runner.run(
@@ -160,11 +162,10 @@ pub fn attach_vnc(
         .with_context(|| format!("failed to write {}", profile_path.display()))?;
 
     let process_id = runner.spawn_detached(
-        &config.viewer.vnc_viewer,
-        &[
-            OsString::from("-c"),
-            OsString::from(profile_path.as_os_str()),
-        ],
+        &config.viewer.vnc.command,
+        &remmina_args(&config.viewer.vnc, profile_path.as_os_str()),
+        &config.viewer.vnc.env,
+        config.viewer.vnc.run_as_invoking_user,
     )?;
 
     if !config.keep_temp_files {
@@ -177,6 +178,27 @@ pub fn attach_vnc(
         process_id,
         temp_files: vec![profile_path],
     })
+}
+
+fn viewer_args_with_path(viewer: &ViewerLaunchConfig, path: impl Into<OsString>) -> Vec<OsString> {
+    let mut args = configured_args(viewer);
+    args.push(path.into());
+    args
+}
+
+fn remmina_args(viewer: &ViewerLaunchConfig, profile_path: impl Into<OsString>) -> Vec<OsString> {
+    let mut args = configured_args(viewer);
+    args.push(OsString::from("-c"));
+    args.push(profile_path.into());
+    args
+}
+
+fn configured_args(viewer: &ViewerLaunchConfig) -> Vec<OsString> {
+    viewer
+        .args
+        .iter()
+        .map(|arg| OsString::from(arg.as_str()))
+        .collect()
 }
 
 fn vnc_proxy_from_pvesh_json(stdout: &str) -> Result<VncProxyInfo> {
