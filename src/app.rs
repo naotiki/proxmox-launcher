@@ -380,12 +380,18 @@ impl App {
     }
 
     fn log_session(&mut self, session: viewer::ViewerSession) {
+        let temp_files = session
+            .temp_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         self.log(format!(
             "{} viewer started for VM {} (pid {}, temp files: {})",
             session.protocol.label(),
             session.vmid,
             session.process_id,
-            session.temp_files.len()
+            temp_files
         ));
     }
 
